@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+pydantic
+scikit-learn
+pandas
+joblib
+beautifulsoup4
+requests
+python-whois
+tranco
