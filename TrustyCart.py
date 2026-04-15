@@ -122,8 +122,10 @@ class TrustyCartAnalyzer:
         try:
             headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/123.0.0.0'}
             res = requests.get(url, headers=headers, timeout=8, verify=False)
+            res.raise_for_status()
             html = res.text.lower()
 
+            # Payment validation
             if any(x in html for x in ['visa', 'mastercard', 'mada', 'apple pay', 'credit card']):
                 f['Presence of credit card payment'] = 1
                 pos_logs.append("Payment Security: Trusted gateways found (Indicates financial compliance).")
@@ -133,24 +135,39 @@ class TrustyCartAnalyzer:
                 else:
                     f['Presence of credit card payment'] = 1
 
+            # Cryptocurrency scan
             if any(x in html for x in ['bitcoin', 'crypto', 'usdt', 'ethereum']):
                 f['Presence of crypto currency'] = 1
                 neg_logs.append("Payment Warning: Cryptocurrency accepted (Highly suspicious: Untraceable transactions).")
 
-            if any(x in html for x in ['return policy', 'refund', 'money back', 'استرجاع']):
-                f['Presence of money back payment'] = 1
-                pos_logs.append("Customer Rights: Return/refund policy detected.")
-            else:
-                neg_logs.append("Customer Rights: No explicit return/refund policy found (Increases consumer risk).")
+            # Deep search for Refund/Return policies
+            has_refund = False
+            refund_keywords = ['return policy', 'refund', 'money back', 'استرجاع', 'الاستبدال', 'returns']
+            
+            if any(x in html for x in refund_keywords):
+                has_refund = True
+            
+            if re.search(r'href=[\'"]([^\'"]*(?:refund|return|policy|استرجاع)[^\'"]*)[\'"]', html, re.IGNORECASE):
+                has_refund = True
 
+            if has_refund:
+                f['Presence of money back payment'] = 1
+                pos_logs.append("Customer Rights: Confirmed Return/Refund policy detected (Verified text/link).")
+            else:
+                if not is_auth:
+                    neg_logs.append("Customer Rights: No explicit return/refund policy found on the main page (Increases consumer risk).")
+
+            # Freemail scan
             if re.search(r'[\w\.-]+@(gmail|yahoo|hotmail|outlook)\.com', html):
                 f['Presence of free contact emails'] = 1
                 neg_logs.append("Business Identity: Uses free webmail like Gmail instead of professional domain email.")
 
+            # Third-party reviews check
             if 'trustpilot' in html or 'sitejabber' in html:
                 pos_logs.append("Public Feedback: Third-party review platforms linked on site.")
             else:
-                neg_logs.append("Public Feedback: No established third-party reviews (TrustPilot/SiteJabber) detected.")
+                if not is_auth:
+                    neg_logs.append("Public Feedback: No established third-party reviews (TrustPilot/SiteJabber) detected.")
 
         except Exception:
             if is_auth:
@@ -188,7 +205,7 @@ class TrustyCartAnalyzer:
 
         return pd.DataFrame([f]), pos_logs, neg_logs, is_auth, rank_val
 
-# تعريف نسخة عالمية لتُحمل لمرة واحدة عند تشغيل السيرفر
+# Global instance initialization
 analyzer_instance = TrustyCartAnalyzer()
 
 def check_all_features(url):
@@ -202,10 +219,11 @@ def check_all_features(url):
 
     df_features, pos_logs, neg_logs, is_auth, rank = analyzer_instance.extract_features(url)
 
-    # هنا رجعنا كودك الأصلي بالضبط وبنفس الحسابات للـ score
+    # AI Probability evaluation
     probs = analyzer_instance.model.predict_proba(df_features)[0]
     ai_score = probs[0] * 100
 
+    # Adjustments weighting
     adj = 0
     if len(neg_logs) <= 1:
         adj += 10
@@ -213,6 +231,7 @@ def check_all_features(url):
     adj -= (len(neg_logs) * 6)
 
     if is_auth:
+        # Scale score for authorized top domains
         base_score = 100.0 - (math.log10(max(1, rank)) * 2.2)
         if any("Highly established" in p for p in pos_logs): base_score += 1.5
         if any("Valid SSL" in p for p in pos_logs): base_score += 1.0
@@ -226,9 +245,10 @@ def check_all_features(url):
 
         pos_logs.insert(0, f"🛡️ Dynamic Weighting: Score scaled mathematically based on Rank #{rank}.")
     else:
+        # Base calculation
         final_score = ai_score + adj
 
-        # SME local store override
+        # SME local store override parameters
         is_established = any("Established" in p or "Highly established" in p for p in pos_logs)
         has_ssl = any("Valid SSL" in p for p in pos_logs)
         has_payments = any("Payment Security" in p for p in pos_logs)
@@ -237,12 +257,14 @@ def check_all_features(url):
             final_score = max(final_score, 72.0)
             pos_logs.insert(0, "🛡️ SME Insight: Verified as a legitimate local business (Overrides AI penalty for small scale).")
 
+        # Clamp limits
         final_score = max(0.15, min(final_score, 94.0))
 
         # --- AI Blackbox Insight Feature ---
         if final_score < 50 and len(neg_logs) <= 3:
             neg_logs.append("🤖 AI Pattern Matching: Deep learning model detected structural/HTML similarities with known phishing templates.")
 
+        # Verdict logic tree
         if final_score >= 85:
             verdict = "✅ HIGHLY TRUSTED (Very Safe)"
         elif final_score >= 70:
@@ -256,7 +278,6 @@ def check_all_features(url):
 
     return {
         "verdict": verdict,
-        # في كودك الأصلي استخدمت format {final_score:.2f}، فهنا استخدمت round لتقريبها لرقمين
         "score": round(final_score, 2), 
         "positives": pos_logs,
         "negatives": neg_logs
