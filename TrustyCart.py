@@ -118,14 +118,17 @@ class TrustyCartAnalyzer:
         else:
             neg_logs.append("Encryption: Missing or invalid SSL! (CRITICAL: Hackers can intercept your data).")
 
-        # --- 4. Content Scraper ---
+        # --- 4. Content Scraper (Stealth & Smart Mode) ---
         try:
-            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/123.0.0.0'}
-            res = requests.get(url, headers=headers, timeout=8, verify=False)
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9,ar;q=0.8'
+            }
+            res = requests.get(url, headers=headers, timeout=10, verify=False)
             res.raise_for_status()
             html = res.text.lower()
 
-            # Payment validation
             if any(x in html for x in ['visa', 'mastercard', 'mada', 'apple pay', 'credit card']):
                 f['Presence of credit card payment'] = 1
                 pos_logs.append("Payment Security: Trusted gateways found (Indicates financial compliance).")
@@ -135,12 +138,10 @@ class TrustyCartAnalyzer:
                 else:
                     f['Presence of credit card payment'] = 1
 
-            # Cryptocurrency scan
             if any(x in html for x in ['bitcoin', 'crypto', 'usdt', 'ethereum']):
                 f['Presence of crypto currency'] = 1
                 neg_logs.append("Payment Warning: Cryptocurrency accepted (Highly suspicious: Untraceable transactions).")
 
-            # Deep search for Refund/Return policies
             has_refund = False
             refund_keywords = ['return policy', 'refund', 'money back', 'استرجاع', 'الاستبدال', 'returns']
             
@@ -157,14 +158,12 @@ class TrustyCartAnalyzer:
                 if not is_auth:
                     neg_logs.append("Customer Rights: No explicit return/refund policy found on the main page (Increases consumer risk).")
 
-            # Freemail scan
             if re.search(r'[\w\.-]+@(gmail|yahoo|hotmail|outlook)\.com', html):
                 f['Presence of free contact emails'] = 1
                 neg_logs.append("Business Identity: Uses free webmail like Gmail instead of professional domain email.")
 
-            # Third-party reviews check
-            if 'trustpilot' in html or 'sitejabber' in html:
-                pos_logs.append("Public Feedback: Third-party review platforms linked on site.")
+            if re.search(r'href=[\'"]https?://(www\.)?(trustpilot\.com|sitejabber\.com)/[^\'"]*[\'"]', html, re.IGNORECASE):
+                pos_logs.append("Public Feedback: Verified Third-party review platform links detected.")
             else:
                 if not is_auth:
                     neg_logs.append("Public Feedback: No established third-party reviews (TrustPilot/SiteJabber) detected.")
@@ -174,9 +173,9 @@ class TrustyCartAnalyzer:
                 f['Presence of credit card payment'] = 1
                 pos_logs.append("Security Status: Enterprise firewall active (Standard protection).")
             else:
-                neg_logs.append("Content Scan: Failed to fetch site content (Site may be actively blocking scanners or offline).")
+                neg_logs.append("Content Scan: Site structure blocked deep scanning (Common in strict local firewalls or offline sites).")
 
-        # --- 5. WHOIS ---
+        # --- 5. WHOIS (Safe Error Handling) ---
         try:
             with open(os.devnull, 'w') as devnull:
                 with contextlib.redirect_stderr(devnull):
@@ -201,7 +200,7 @@ class TrustyCartAnalyzer:
         except Exception:
             if not is_auth:
                 f['Indication of young domain '] = 1
-                neg_logs.append("Transparency: WHOIS registration data is hidden (Scammers use this to hide their identity).")
+                neg_logs.append("Transparency: WHOIS age is hidden by privacy protection (Limits historical verification).")
 
         return pd.DataFrame([f]), pos_logs, neg_logs, is_auth, rank_val
 
@@ -231,7 +230,7 @@ def check_all_features(url):
     adj -= (len(neg_logs) * 6)
 
     if is_auth:
-        # Scale score for authorized top domains
+        # Trusted Domains Override
         base_score = 100.0 - (math.log10(max(1, rank)) * 2.2)
         if any("Highly established" in p for p in pos_logs): base_score += 1.5
         if any("Valid SSL" in p for p in pos_logs): base_score += 1.0
@@ -244,6 +243,7 @@ def check_all_features(url):
             verdict = "✅ HIGHLY TRUSTED (Verified Secure Store)"
 
         pos_logs.insert(0, f"🛡️ Dynamic Weighting: Score scaled mathematically based on Rank #{rank}.")
+    
     else:
         # Base calculation
         final_score = ai_score + adj
@@ -260,21 +260,34 @@ def check_all_features(url):
         # Clamp limits
         final_score = max(0.15, min(final_score, 94.0))
 
-        # --- AI Blackbox Insight Feature ---
+        # AI Blackbox Insight Feature
         if final_score < 50 and len(neg_logs) <= 3:
             neg_logs.append("🤖 AI Pattern Matching: Deep learning model detected structural/HTML similarities with known phishing templates.")
 
-        # Verdict logic tree
+        # --- Smart Verdict Logic (Vulnerable vs Scam) ---
+        has_scam_traits = any("free webmail" in n or "Newly registered" in n or "Cryptocurrency" in n for n in neg_logs)
+
         if final_score >= 85:
             verdict = "✅ HIGHLY TRUSTED (Very Safe)"
         elif final_score >= 70:
             verdict = "✅ TRUSTED (Safe Local/Regional Store)"
         elif final_score >= 50:
-            verdict = "⚠️ MODERATE TRUST (Proceed with Standard Caution)"
+            if is_established and not has_scam_traits:
+                verdict = "⚠️ OUTDATED TECH (Legit Store, Weak Security)"
+            else:
+                verdict = "⚠️ MODERATE TRUST (Proceed with Standard Caution)"
         elif final_score >= 30:
-            verdict = "🟠 SUSPICIOUS (Manual Verification Advised)"
+            if is_established and not has_scam_traits:
+                verdict = "🟠 VULNERABLE (Real Business, Poor IT Infrastructure)"
+                neg_logs.append("💡 System Insight: Low score is due to weak coding/security standards, not fraud. Product delivery is likely, but data is at risk.")
+            else:
+                verdict = "🟠 SUSPICIOUS (Manual Verification Advised)"
         else:
-            verdict = "🚨 FRAUDULENT (High Risk of Phishing/Scam)"
+            if is_established and not has_scam_traits:
+                verdict = "🚨 CRITICAL RISK (Established Store with Broken Security)"
+                neg_logs.append("💡 System Insight: Site appears to be a real business, but security is dangerously outdated.")
+            else:
+                verdict = "🚨 FRAUDULENT (High Risk of Phishing/Scam)"
 
     return {
         "verdict": verdict,
