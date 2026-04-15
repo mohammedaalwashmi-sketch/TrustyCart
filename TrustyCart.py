@@ -19,7 +19,6 @@ import contextlib
 warnings.filterwarnings("ignore", category=UserWarning)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-
 class TrustyCartAnalyzer:
     def __init__(self, model_path='model.pkl'):
         try:
@@ -27,9 +26,9 @@ class TrustyCartAnalyzer:
             print("[+] Model loaded successfully.")
         except Exception as e:
             print(f"[!] Error loading model: {e}")
-            # في بيئة السيرفر نفضل عدم استخدام sys.exit عشان ما يطفي السيرفر كامل
             self.model = None
 
+        # Feature array - must exactly match the trained pickle model
         self.features_names = [
             'Domain length', 'Top domain length', "Presence of prefix 'www' ",
             'Number  of digits', 'Number  of letters', 'Number  of dots (.)',
@@ -193,10 +192,6 @@ class TrustyCartAnalyzer:
 analyzer_instance = TrustyCartAnalyzer()
 
 def check_all_features(url):
-    """
-    هذه الدالة هي نقطة الاتصال بين api.py وهذا الملف.
-    تستقبل الرابط وتعيد قاموساً يحتوي على النتيجة لعرضها في الإضافة.
-    """
     if analyzer_instance.model is None:
          return {
             "verdict": "Error: Model not loaded",
@@ -207,6 +202,7 @@ def check_all_features(url):
 
     df_features, pos_logs, neg_logs, is_auth, rank = analyzer_instance.extract_features(url)
 
+    # هنا رجعنا كودك الأصلي بالضبط وبنفس الحسابات للـ score
     probs = analyzer_instance.model.predict_proba(df_features)[0]
     ai_score = probs[0] * 100
 
@@ -232,6 +228,7 @@ def check_all_features(url):
     else:
         final_score = ai_score + adj
 
+        # SME local store override
         is_established = any("Established" in p or "Highly established" in p for p in pos_logs)
         has_ssl = any("Valid SSL" in p for p in pos_logs)
         has_payments = any("Payment Security" in p for p in pos_logs)
@@ -242,6 +239,7 @@ def check_all_features(url):
 
         final_score = max(0.15, min(final_score, 94.0))
 
+        # --- AI Blackbox Insight Feature ---
         if final_score < 50 and len(neg_logs) <= 3:
             neg_logs.append("🤖 AI Pattern Matching: Deep learning model detected structural/HTML similarities with known phishing templates.")
 
@@ -258,7 +256,8 @@ def check_all_features(url):
 
     return {
         "verdict": verdict,
-        "score": round(final_score, 1),
+        # في كودك الأصلي استخدمت format {final_score:.2f}، فهنا استخدمت round لتقريبها لرقمين
+        "score": round(final_score, 2), 
         "positives": pos_logs,
         "negatives": neg_logs
     }
