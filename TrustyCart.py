@@ -14,10 +14,72 @@ import math
 import urllib3
 import os
 import contextlib
+import sqlite3  # مكتبة قاعدة البيانات
+import json     # لتحويل القوائم إلى نصوص تُحفظ بالداتابيز
+import time     # لحساب وقت الفحص
 
 # Mute warnings to keep the terminal clean
 warnings.filterwarnings("ignore", category=UserWarning)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# ==========================================
+# إعداد وإدارة قاعدة البيانات (Caching & Logging)
+# ==========================================
+DB_NAME = 'trustycart_cache.db'
+CACHE_EXPIRY_SECONDS = 86400  # مدة حفظ الفحص: 24 ساعة (لتسريع النظام)
+
+def init_db():
+    """تهيئة قاعدة البيانات وإنشاء الجدول إذا لم يكن موجوداً"""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS scans (
+            url TEXT PRIMARY KEY,
+            score REAL,
+            verdict TEXT,
+            positives TEXT,
+            negatives TEXT,
+            timestamp REAL
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+def get_cached_scan(url):
+    """البحث في قاعدة البيانات لاسترجاع الفحص إن وجد وكان حديثاً"""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute('SELECT score, verdict, positives, negatives, timestamp FROM scans WHERE url = ?', (url,))
+    row = cursor.fetchone()
+    conn.close()
+
+    if row:
+        score, verdict, pos_json, neg_json, timestamp = row
+        # التحقق هل الفحص قديم أم تم خلال الـ 24 ساعة الماضية
+        if time.time() - timestamp < CACHE_EXPIRY_SECONDS:
+            return {
+                "verdict": verdict + " ⚡ (Cached Fast Result)", 
+                "score": score,
+                "positives": json.loads(pos_json),
+                "negatives": json.loads(neg_json),
+                "is_cached": True
+            }
+    return None
+
+def save_scan_to_db(url, score, verdict, positives, negatives):
+    """حفظ نتيجة الفحص الجديد في قاعدة البيانات"""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT OR REPLACE INTO scans (url, score, verdict, positives, negatives, timestamp)
+        VALUES (?, ?, ?, ?, ?, ?)
+    ''', (url, score, verdict, json.dumps(positives), json.dumps(negatives), time.time()))
+    conn.commit()
+    conn.close()
+
+# تشغيل دالة تهيئة الداتابيز عند بدء تشغيل السيرفر
+init_db()
+# ==========================================
 
 class TrustyCartAnalyzer:
     def __init__(self, model_path='model.pkl'):
@@ -208,6 +270,17 @@ class TrustyCartAnalyzer:
 analyzer_instance = TrustyCartAnalyzer()
 
 def check_all_features(url):
+    # تنظيف الرابط عشان نبحث عنه في الداتابيز بشكل موحد
+    clean_url = url.lower().strip().rstrip('/')
+    if not clean_url.startswith('http'):
+        clean_url = 'https://' + clean_url
+
+    # 1. فحص الذاكرة المؤقتة (Database Read)
+    cached_result = get_cached_scan(clean_url)
+    if cached_result:
+        return cached_result
+
+    # 2. إذا الرابط جديد، نكمل التحليل المعتاد
     if analyzer_instance.model is None:
          return {
             "verdict": "Error: Model not loaded",
@@ -289,9 +362,14 @@ def check_all_features(url):
             else:
                 verdict = "🚨 FRAUDULENT (High Risk of Phishing/Scam)"
 
-    return {
+    final_result = {
         "verdict": verdict,
         "score": round(final_score, 2), 
         "positives": pos_logs,
         "negatives": neg_logs
     }
+
+    # 3. حفظ النتيجة في قاعدة البيانات للمرات الجاية (Database Write)
+    save_scan_to_db(clean_url, final_result["score"], final_result["verdict"], final_result["positives"], final_result["negatives"])
+
+    return final_result
